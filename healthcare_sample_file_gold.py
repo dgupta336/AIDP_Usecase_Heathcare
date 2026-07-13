@@ -2,7 +2,7 @@
 
 # Patient summary table
 spark.sql("""
-CREATE TABLE IF NOT EXISTS healthcare.gold.patient_summary (
+CREATE TABLE IF NOT EXISTS pwc_aidp_datalake.gold.patient_summary (
     patient_id STRING,
     total_diagnoses INT,
     unique_diagnoses INT,
@@ -23,7 +23,7 @@ CLUSTER BY (patient_id)
 
 # Diagnosis analytics table
 spark.sql("""
-CREATE TABLE IF NOT EXISTS healthcare.gold.diagnosis_analytics (
+CREATE TABLE IF NOT EXISTS pwc_aidp_datalake.gold.diagnosis_analytics (
     diagnosis_code STRING,
     diagnosis_description STRING,
     month STRING,
@@ -40,7 +40,7 @@ CLUSTER BY (diagnosis_code, month)
 
 # Facility performance table
 spark.sql("""
-CREATE TABLE IF NOT EXISTS healthcare.gold.facility_performance (
+CREATE TABLE IF NOT EXISTS pwc_aidp_datalake.gold.facility_performance (
     facility_id STRING,
     month STRING,
     total_diagnoses INT,
@@ -57,7 +57,7 @@ CLUSTER BY (facility_id, month)
 
 # ML-ready readmission features table
 spark.sql("""
-CREATE TABLE IF NOT EXISTS healthcare.gold.patient_readmission_features (
+CREATE TABLE IF NOT EXISTS pwc_aidp_datalake.gold.patient_readmission_features (
     patient_id STRING,
     total_diagnoses INT,
     unique_diagnoses INT,
@@ -86,26 +86,30 @@ print("Each table is optimized with liquid clustering for specific query pattern
 from pyspark.sql.functions import *
 
 # Read silver layer data
-silver_df = spark.table("healthcare.silver.patient_diagnoses_clean")
+silver_df = spark.table("pwc_aidp_datalake.silver.patient_diagnoses_clean")
 
 # Create patient summary aggregates
+# FIX: count()/countDistinct() return BIGINT, but the table columns are INT.
+#      Cast every count-based column to INT so it matches the table schema
+#      (resolves DELTA_FAILED_TO_MERGE_FIELDS on 'total_diagnoses', etc.).
 patient_summary_df = silver_df.groupBy("patient_id").agg(
-    count("*").alias("total_diagnoses"),
-    countDistinct("diagnosis_code").alias("unique_diagnoses"),
+    count("*").cast("int").alias("total_diagnoses"),
+    countDistinct("diagnosis_code").cast("int").alias("unique_diagnoses"),
     min("diagnosis_date").alias("first_diagnosis_date"),
     max("diagnosis_date").alias("last_diagnosis_date"),
-    datediff(max("diagnosis_date"), min("diagnosis_date")).alias("patient_tenure_days"),
+    datediff(max("diagnosis_date"), min("diagnosis_date")).cast("int").alias("patient_tenure_days"),
     round(avg(
         when(col("severity_level") == "Critical", 1.0)
         .when(col("severity_level") == "High", 0.75)
         .when(col("severity_level") == "Medium", 0.5)
         .otherwise(0.25)
     ), 3).alias("avg_severity_score"),
-    countDistinct("facility_id").alias("facilities_used"),
-    countDistinct("treating_physician").alias("physicians_seen"),
-    countDistinct(date_format("diagnosis_date", "yyyy-MM")).alias("active_months"),
+    countDistinct("facility_id").cast("int").alias("facilities_used"),
+    countDistinct("treating_physician").cast("int").alias("physicians_seen"),
+    countDistinct(date_format("diagnosis_date", "yyyy-MM")).cast("int").alias("active_months"),
     (avg(
         when(col("severity_level") == "Critical", 1.0)
+        .when(col("severity_level") == "High", 0.75)
         .when(col("severity_level") == "Medium", 0.5)
         .otherwise(0.25)
     ) > 0.6).alias("high_severity_flag"),
@@ -114,18 +118,19 @@ patient_summary_df = silver_df.groupBy("patient_id").agg(
 ).orderBy("patient_id")
 
 # Insert into gold layer
-patient_summary_df.write.mode("overwrite").saveAsTable("healthcare.gold.patient_summary")
+patient_summary_df.write.mode("overwrite").saveAsTable("pwc_aidp_datalake.gold.patient_summary")
 
 print(f"Created patient summaries for {patient_summary_df.count()} patients")
-print("Patient summary provides consolidated view of patient healthcare journey.")
+print("Patient summary provides consolidated view of patient pwc_aidp_datalake journey.")
 
 # Step 10 - Populate Gold Layer: Diagnosis Analytics
 
 # Create diagnosis analytics by code and month
+# FIX: cast count-based columns to INT to match the table schema.
 diagnosis_analytics_df = silver_df.withColumn("month", date_format("diagnosis_date", "yyyy-MM"))
 diagnosis_analytics_df = diagnosis_analytics_df.groupBy("diagnosis_code", "diagnosis_description", "month").agg(
-    count("*").alias("diagnosis_count"),
-    countDistinct("patient_id").alias("unique_patients"),
+    count("*").cast("int").alias("diagnosis_count"),
+    countDistinct("patient_id").cast("int").alias("unique_patients"),
     round(avg(
         when(col("severity_level") == "Critical", 1.0)
         .when(col("severity_level") == "High", 0.75)
@@ -136,31 +141,32 @@ diagnosis_analytics_df = diagnosis_analytics_df.groupBy("diagnosis_code", "diagn
         when(col("severity_level") == "Critical", 1.0)
         .otherwise(0.0)
     ), 3).alias("critical_case_ratio"),
-    countDistinct("facility_id").alias("facility_count"),
-    countDistinct("treating_physician").alias("physician_count")
+    countDistinct("facility_id").cast("int").alias("facility_count"),
+    countDistinct("treating_physician").cast("int").alias("physician_count")
 ).orderBy("diagnosis_code", "month")
 
 # Insert into gold layer
-diagnosis_analytics_df.write.mode("overwrite").saveAsTable("healthcare.gold.diagnosis_analytics")
+diagnosis_analytics_df.write.mode("overwrite").saveAsTable("pwc_aidp_datalake.gold.diagnosis_analytics")
 
 print(f"Created diagnosis analytics for {diagnosis_analytics_df.count()} diagnosis-month combinations")
-print("Diagnosis analytics enables healthcare trend analysis and resource planning.")
+print("Diagnosis analytics enables pwc_aidp_datalake trend analysis and resource planning.")
 
 # Step 11 - Populate Gold Layer: Facility Performance
 
 # Create facility performance metrics by facility and month
+# FIX: cast count-based columns (incl. the sum) to INT to match the table schema.
 facility_df = silver_df.withColumn("month", date_format("diagnosis_date", "yyyy-MM"))
 facility_performance_df = facility_df.groupBy("facility_id", "month").agg(
-    count("*").alias("total_diagnoses"),
-    countDistinct("patient_id").alias("unique_patients"),
-    countDistinct("treating_physician").alias("unique_physicians"),
+    count("*").cast("int").alias("total_diagnoses"),
+    countDistinct("patient_id").cast("int").alias("unique_patients"),
+    countDistinct("treating_physician").cast("int").alias("unique_physicians"),
     round(avg(
         when(col("severity_level") == "Critical", 1.0)
         .when(col("severity_level") == "High", 0.75)
         .when(col("severity_level") == "Medium", 0.5)
         .otherwise(0.25)
     ), 3).alias("avg_severity_score"),
-    sum(when(col("severity_level") == "Critical", 1).otherwise(0)).alias("critical_case_count"),
+    sum(when(col("severity_level") == "Critical", 1).otherwise(0)).cast("int").alias("critical_case_count"),
     # Patient satisfaction proxy (inverse of severity and case complexity)
     round(1.0 - avg(
         when(col("severity_level") == "Critical", 1.0)
@@ -173,7 +179,7 @@ facility_performance_df = facility_df.groupBy("facility_id", "month").agg(
 ).orderBy("facility_id", "month")
 
 # Insert into gold layer
-facility_performance_df.write.mode("overwrite").saveAsTable("healthcare.gold.facility_performance")
+facility_performance_df.write.mode("overwrite").saveAsTable("pwc_aidp_datalake.gold.facility_performance")
 
 print(f"Created facility performance metrics for {facility_performance_df.count()} facility-month combinations")
 print("Facility performance enables operational analytics and quality monitoring.")
@@ -184,21 +190,25 @@ print("Facility performance enables operational analytics and quality monitoring
 silver_df.createOrReplaceTempView("silver_diagnoses")
 
 # Calculate patient-level features using SQL with proper subquery structure
+# FIX 1: CAST the count-based columns to INT to match the table schema.
+# FIX 2: the flags high_visit_frequency / complex_case / high_severity_patient
+#        are declared BOOLEAN in the table, so emit boolean expressions
+#        (x > n) instead of CASE WHEN ... THEN 1 ELSE 0 (which is INT).
 ml_features_sql = """
 SELECT 
     p.patient_id,
-    p.total_diagnoses,
-    p.unique_diagnoses,
+    CAST(p.total_diagnoses AS INT) as total_diagnoses,
+    CAST(p.unique_diagnoses AS INT) as unique_diagnoses,
     ROUND(p.avg_severity_score, 3) as avg_severity_score,
-    p.facilities_used,
-    p.physicians_seen,
-    p.active_months,
-    p.days_since_last_visit,
-    p.patient_tenure_days,
-    COALESCE(v.avg_days_between_visits, 30) as avg_days_between_visits,
-    CASE WHEN p.total_diagnoses > 6 THEN 1 ELSE 0 END as high_visit_frequency,
-    CASE WHEN p.unique_diagnoses > 4 THEN 1 ELSE 0 END as complex_case,
-    CASE WHEN p.avg_severity_score > 0.6 THEN 1 ELSE 0 END as high_severity_patient,
+    CAST(p.facilities_used AS INT) as facilities_used,
+    CAST(p.physicians_seen AS INT) as physicians_seen,
+    CAST(p.active_months AS INT) as active_months,
+    CAST(p.days_since_last_visit AS INT) as days_since_last_visit,
+    CAST(p.patient_tenure_days AS INT) as patient_tenure_days,
+    COALESCE(v.avg_days_between_visits, 30.0) as avg_days_between_visits,
+    (p.total_diagnoses > 6) as high_visit_frequency,
+    (p.unique_diagnoses > 4) as complex_case,
+    (p.avg_severity_score > 0.6) as high_severity_patient,
     CASE WHEN 
         p.total_diagnoses > 6 OR 
         p.unique_diagnoses > 4 OR 
@@ -212,12 +222,16 @@ FROM (
         patient_id,
         COUNT(*) as total_diagnoses,
         COUNT(DISTINCT diagnosis_code) as unique_diagnoses,
-        AVG(CASE 
+        -- FIX: in raw Spark SQL, literals like 1.0 are DECIMAL, so AVG(...)
+        --      returns DECIMAL and clashes with the DOUBLE table column
+        --      (DELTA_FAILED_TO_MERGE_FIELDS on 'avg_severity_score').
+        --      Cast the average to DOUBLE to match the table schema.
+        CAST(AVG(CASE 
             WHEN severity_level = 'Critical' THEN 1.0
             WHEN severity_level = 'High' THEN 0.75
             WHEN severity_level = 'Medium' THEN 0.5
             ELSE 0.25
-        END) as avg_severity_score,
+        END) AS DOUBLE) as avg_severity_score,
         COUNT(DISTINCT facility_id) as facilities_used,
         COUNT(DISTINCT treating_physician) as physicians_seen,
         COUNT(DISTINCT DATE_FORMAT(diagnosis_date, 'yyyy-MM')) as active_months,
@@ -248,7 +262,7 @@ LEFT JOIN (
 ml_features_df = spark.sql(ml_features_sql)
 
 # Insert into gold layer
-ml_features_df.write.mode("overwrite").saveAsTable("healthcare.gold.patient_readmission_features")
+ml_features_df.write.mode("overwrite").saveAsTable("pwc_aidp_datalake.gold.patient_readmission_features")
 
 print(f"Created ML-ready features for {ml_features_df.count()} patients")
 print("ML features enable predictive analytics for patient readmission risk.")
@@ -259,7 +273,7 @@ print("=== Gold Layer Analytics Demonstration ===")
 
 # Patient summary analytics
 print("\nPatient Summary Analytics:")
-patient_summary = spark.table("healthcare.gold.patient_summary")
+patient_summary = spark.table("pwc_aidp_datalake.gold.patient_summary")
 patient_summary.select(
     "patient_id", "total_diagnoses", "unique_diagnoses", 
     "avg_severity_score", "high_severity_flag", "complex_case_flag"
@@ -267,7 +281,7 @@ patient_summary.select(
 
 # Diagnosis analytics
 print("\nDiagnosis Analytics:")
-diagnosis_analytics = spark.table("healthcare.gold.diagnosis_analytics")
+diagnosis_analytics = spark.table("pwc_aidp_datalake.gold.diagnosis_analytics")
 diagnosis_analytics.select(
     "diagnosis_code", "month", "diagnosis_count", 
     "unique_patients", "critical_case_ratio"
@@ -275,7 +289,7 @@ diagnosis_analytics.select(
 
 # Facility performance
 print("\nFacility Performance:")
-facility_performance = spark.table("healthcare.gold.facility_performance")
+facility_performance = spark.table("pwc_aidp_datalake.gold.facility_performance")
 facility_performance.select(
     "facility_id", "month", "total_diagnoses", 
     "avg_severity_score", "efficiency_score"
@@ -283,7 +297,7 @@ facility_performance.select(
 
 # ML features preview
 print("\nML Features Preview:")
-ml_features = spark.table("healthcare.gold.patient_readmission_features")
+ml_features = spark.table("pwc_aidp_datalake.gold.patient_readmission_features")
 ml_features.select(
     "patient_id", "total_diagnoses", "avg_severity_score", 
     "readmission_risk_label"
@@ -297,7 +311,7 @@ from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from pyspark.ml import Pipeline
 
 # Read ML-ready features from gold layer
-ml_features_df = spark.table("healthcare.gold.patient_readmission_features")
+ml_features_df = spark.table("pwc_aidp_datalake.gold.patient_readmission_features")
 
 # Prepare features for model training
 feature_cols = [
