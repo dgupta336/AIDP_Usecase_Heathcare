@@ -1,4 +1,5 @@
 # Dhaval's code
+# Added this line in Git
 # Step 1 - Create pwc_aidp_datalake catalog and medallion schemas
 
 spark.sql("CREATE CATALOG IF NOT EXISTS pwc_aidp_datalake")
