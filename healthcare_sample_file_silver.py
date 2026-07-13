@@ -45,7 +45,7 @@ silver_df = bronze_df.withColumn(
     initcap(trim("diagnosis_description"))
 ).withColumn(
     "severity_level",
-    when(upper(trim("severity_level")).isin(["CRITICAL", "HIGH", "MEDIUM", "LOW"]), 
+    when(upper(trim("severity_level")).isin(["CRITICAL", "HIGH", "MEDIUM", "LOW"]),
          initcap(trim("severity_level")))
     .otherwise("Unknown")
 ).withColumn(
@@ -58,8 +58,8 @@ silver_df = bronze_df.withColumn(
     .otherwise("UNKNOWN")
 ).withColumn(
     "is_valid_record",
-    (col("patient_id").isNotNull()) & 
-    (col("diagnosis_date").isNotNull()) & 
+    (col("patient_id").isNotNull()) &
+    (col("diagnosis_date").isNotNull()) &
     (col("diagnosis_code").isNotNull()) &
     (length(trim("diagnosis_code")) > 0)
 ).withColumn(
@@ -78,6 +78,25 @@ silver_df = bronze_df.withColumn(
 
 # Remove duplicates based on patient_id, diagnosis_date, diagnosis_code
 silver_df = silver_df.dropDuplicates(["patient_id", "diagnosis_date", "diagnosis_code"])
+
+# --- FIX ---
+# Select ONLY the columns defined in the silver table, in the same order.
+# withColumn() keeps every column that comes from bronze, so ingestion_timestamp
+# was surviving into silver_df and causing the Delta schema-mismatch error
+# (_LEGACY_ERROR_TEMP_DELTA_0007). Selecting the exact target columns drops it
+# and guarantees the DataFrame aligns with the table schema.
+silver_df = silver_df.select(
+    "patient_id",
+    "diagnosis_date",
+    "diagnosis_code",
+    "diagnosis_description",
+    "severity_level",
+    "treating_physician",
+    "facility_id",
+    "is_valid_record",
+    "data_quality_score",
+    "processing_timestamp"
+)
 
 # Insert cleaned data into silver layer
 silver_df.write.mode("overwrite").saveAsTable("pwc_aidp_datalake.silver.patient_diagnoses_clean")
@@ -104,4 +123,3 @@ quality_distribution.show()
 # Sample cleaned records
 print("\nSample Cleaned Records:")
 spark.table("pwc_aidp_datalake.silver.patient_diagnoses_clean").show(5)
-
