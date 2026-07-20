@@ -1,4 +1,4 @@
-# Step 5 - Create Silver Layer Delta table with liquid clustering.
+# Step 5 - Create Silver Layer Delta table with liquid clustering. Test DG
 
 spark.sql("""
 CREATE TABLE IF NOT EXISTS pwc_aidp_datalake.silver.patient_diagnoses_clean (
